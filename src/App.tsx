@@ -1,31 +1,46 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { LedgerMeta, ProgressMap } from './types';
-import { SCHEDULE } from './data/schedule';
+import { LedgerMeta, ProgressMap, ReflectionsMap, ScheduleDay, PlanId, FilterView } from './types';
+import { READING_PLANS, DEFAULT_PLAN_ID } from './data/plans';
 import { safeGet, safeSet } from './services/storage';
 import { ledgerApi } from './services/ledgerApi';
-import { getTodayIndex } from './utils';
+import { getTodayIndex, getMissedDays } from './utils';
 import { HeroCard } from './components/HeroCard';
 import { TodayCard } from './components/TodayCard';
+import { CatchUpBanner } from './components/CatchUpBanner';
 import { LeaderboardCard } from './components/LeaderboardCard';
 import { WeekAccordion } from './components/WeekAccordion';
 import { Onboarding } from './components/Onboarding';
 import { IdentityModal } from './components/IdentityModal';
+import { PlanSelectorModal } from './components/PlanSelectorModal';
+import { ReflectionModal } from './components/ReflectionModal';
 
 export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<string | null>(null);
   const [meta, setMeta] = useState<LedgerMeta | null>(null);
   const [progress, setProgress] = useState<ProgressMap>({});
+  const [reflections, setReflections] = useState<ReflectionsMap>({});
+
+  // Modals & UI View State
   const [isIdentityModalOpen, setIsIdentityModalOpen] = useState(false);
+  const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
+  const [selectedReflectionDay, setSelectedReflectionDay] = useState<ScheduleDay | null>(null);
+  const [activeFilter, setActiveFilter] = useState<FilterView>('all');
 
   const loadData = useCallback(async () => {
     try {
       const idRes = await safeGet<{ name: string }>('my-identity', false);
       setMe(idRes?.name || null);
 
-      const { meta: loadedMeta, progress: loadedProgress } = await ledgerApi.loadLedger();
+      const {
+        meta: loadedMeta,
+        progress: loadedProgress,
+        reflections: loadedReflections,
+      } = await ledgerApi.loadLedger();
+
       setMeta(loadedMeta);
       setProgress(loadedProgress);
+      setReflections(loadedReflections);
     } catch (err) {
       console.error('Failed to load ledger data:', err);
     } finally {
@@ -40,9 +55,15 @@ export const App: React.FC = () => {
   // Realtime subscription for single group
   useEffect(() => {
     const unsubscribe = ledgerApi.subscribeToChanges(async () => {
-      const { meta: refreshedMeta, progress: refreshedProgress } = await ledgerApi.loadLedger();
+      const {
+        meta: refreshedMeta,
+        progress: refreshedProgress,
+        reflections: refreshedReflections,
+      } = await ledgerApi.loadLedger();
+
       if (refreshedMeta) setMeta(refreshedMeta);
       setProgress(refreshedProgress);
+      setReflections(refreshedReflections);
     });
 
     return () => {
@@ -50,13 +71,14 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  const handleStartSetup = async (name: string, startDate: string) => {
+  const handleStartSetup = async (name: string, startDate: string, planId: PlanId) => {
     setLoading(true);
     try {
-      const createdMeta = await ledgerApi.createLedger(name, startDate);
+      const createdMeta = await ledgerApi.createLedger(name, startDate, planId);
       setMe(name);
       setMeta(createdMeta);
       setProgress({});
+      setReflections({});
     } catch (err) {
       console.error('Failed to create ledger:', err);
     } finally {
@@ -72,12 +94,19 @@ export const App: React.FC = () => {
         setMe(name);
         setMeta(result.meta);
         setProgress(result.progress);
+        setReflections(result.reflections);
       }
     } catch (err) {
       console.error('Failed to join ledger:', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSelectPlan = async (planId: PlanId) => {
+    if (!meta) return;
+    const updated = await ledgerApi.updatePlan(planId, meta);
+    setMeta(updated);
   };
 
   const handleSelectIdentity = async (name: string) => {
@@ -96,9 +125,19 @@ export const App: React.FC = () => {
 
   const handleToggleDay = async (day: number) => {
     if (!me) return;
-
     const newProgress = await ledgerApi.toggleDay(day, me, progress);
     setProgress(newProgress);
+  };
+
+  const handleSaveReflection = async (text: string) => {
+    if (!me || !selectedReflectionDay) return;
+    const updated = await ledgerApi.saveReflection(
+      selectedReflectionDay.day,
+      me,
+      text,
+      reflections
+    );
+    setReflections(updated);
   };
 
   if (loading) {
@@ -115,17 +154,27 @@ export const App: React.FC = () => {
     );
   }
 
-  const expectedDay = getTodayIndex(meta.startDate);
-  const todayEntry = SCHEDULE[expectedDay - 1] || SCHEDULE[0];
+  const activePlan = READING_PLANS[meta.planId || DEFAULT_PLAN_ID] || READING_PLANS[DEFAULT_PLAN_ID];
+  const expectedDay = getTodayIndex(meta.startDate, activePlan.totalDays);
+  const todayEntry = activePlan.schedule[expectedDay - 1] || activePlan.schedule[0];
+  const missedDays = getMissedDays(me, progress, expectedDay);
 
   return (
     <div className="wrap">
       <HeroCard
         me={me}
         meta={meta}
+        plan={activePlan}
         progress={progress}
         expectedDay={expectedDay}
         onSwitchIdentity={() => setIsIdentityModalOpen(true)}
+        onOpenPlanSelector={() => setIsPlanModalOpen(true)}
+      />
+
+      <CatchUpBanner
+        missedDays={missedDays}
+        activeFilter={activeFilter}
+        onSelectFilter={(f) => setActiveFilter(f)}
       />
 
       <TodayCard
@@ -133,7 +182,42 @@ export const App: React.FC = () => {
         expectedDay={expectedDay}
         todayEntry={todayEntry}
         progress={progress}
+        reflections={reflections[expectedDay] || []}
         onToggleDay={handleToggleDay}
+        onOpenReflection={(entry) => setSelectedReflectionDay(entry)}
+      />
+
+      {/* Filter Tabs */}
+      <div className="filter-pill-container">
+        <button
+          className={`filter-pill ${activeFilter === 'all' ? 'active' : ''}`}
+          onClick={() => setActiveFilter('all')}
+        >
+          All Weeks
+        </button>
+        <button
+          className={`filter-pill ${activeFilter === 'catchup' ? 'active' : ''}`}
+          onClick={() => setActiveFilter('catchup')}
+        >
+          Catch Up {missedDays.length > 0 && `(${missedDays.length})`}
+        </button>
+        <button
+          className={`filter-pill ${activeFilter === 'ahead' ? 'active' : ''}`}
+          onClick={() => setActiveFilter('ahead')}
+        >
+          Read Ahead
+        </button>
+      </div>
+
+      <WeekAccordion
+        schedule={activePlan.schedule}
+        me={me}
+        expectedDay={expectedDay}
+        progress={progress}
+        reflections={reflections}
+        activeFilter={activeFilter}
+        onToggleDay={handleToggleDay}
+        onOpenReflection={(entry) => setSelectedReflectionDay(entry)}
       />
 
       <LeaderboardCard
@@ -142,14 +226,7 @@ export const App: React.FC = () => {
         progress={progress}
       />
 
-      <WeekAccordion
-        schedule={SCHEDULE}
-        me={me}
-        expectedDay={expectedDay}
-        progress={progress}
-        onToggleDay={handleToggleDay}
-      />
-
+      {/* Modals */}
       <IdentityModal
         currentName={me}
         members={meta.members}
@@ -157,6 +234,24 @@ export const App: React.FC = () => {
         onClose={() => setIsIdentityModalOpen(false)}
         onSelectIdentity={handleSelectIdentity}
       />
+
+      <PlanSelectorModal
+        currentPlanId={activePlan.id}
+        isOpen={isPlanModalOpen}
+        onClose={() => setIsPlanModalOpen(false)}
+        onSelectPlan={handleSelectPlan}
+      />
+
+      {selectedReflectionDay && (
+        <ReflectionModal
+          dayEntry={selectedReflectionDay}
+          notes={reflections[selectedReflectionDay.day] || []}
+          currentUser={me}
+          isOpen={true}
+          onClose={() => setSelectedReflectionDay(null)}
+          onSaveNote={handleSaveReflection}
+        />
+      )}
     </div>
   );
 };

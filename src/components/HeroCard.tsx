@@ -1,33 +1,43 @@
 import React from 'react';
-import { LedgerMeta, ProgressMap } from '../types';
+import { LedgerMeta, ProgressMap, ReadingPlan } from '../types';
 import { formatDate, getCompletedCount, computeStreak } from '../utils';
 import { isSupabaseConfigured } from '../services/supabase';
 
 interface HeroCardProps {
   me: string;
   meta: LedgerMeta;
+  plan: ReadingPlan;
   progress: ProgressMap;
   expectedDay: number;
   onSwitchIdentity: () => void;
+  onOpenPlanSelector: () => void;
 }
 
 export const HeroCard: React.FC<HeroCardProps> = ({
   me,
   meta,
+  plan,
   progress,
   expectedDay,
   onSwitchIdentity,
+  onOpenPlanSelector,
 }) => {
   const myDone = getCompletedCount(me, progress);
-  const pct = Math.round((myDone / 180) * 100);
-  const streak = computeStreak(me, progress);
+  const pct = Math.round((myDone / plan.totalDays) * 100);
+  const streak = computeStreak(me, progress, expectedDay);
   const memberCount = meta.members.length;
   const isCloudSynced = isSupabaseConfigured();
 
   return (
     <div className="hero-card">
       <div className="hero-top">
-        <p className="eyebrow">Six-month reading ledger</p>
+        <button
+          className="plan-badge-btn"
+          onClick={onOpenPlanSelector}
+          title="Click to change reading plan or pacing"
+        >
+          📖 {plan.title} (~{plan.avgChaptersPerDay} ch/day) ▾
+        </button>
         <span className={`sync-badge ${isCloudSynced ? 'online' : 'local'}`}>
           {isCloudSynced ? '● Cloud Synced' : '○ Local Mode'}
         </span>
@@ -35,7 +45,7 @@ export const HeroCard: React.FC<HeroCardProps> = ({
 
       <h1>Through the Book, Together</h1>
       <p className="sub">
-        Started {formatDate(new Date(meta.startDate + 'T00:00:00'))} · 1,189 chapters · 180 days ·{' '}
+        Started {formatDate(new Date(meta.startDate + 'T00:00:00'))} · 1,189 chapters · {plan.totalDays} days ·{' '}
         <span className="whoami" onClick={onSwitchIdentity} title="Click to switch reader identity">
           {me}
         </span>
@@ -44,12 +54,12 @@ export const HeroCard: React.FC<HeroCardProps> = ({
       <div className="ribbon-wrap">
         <div className="ribbon-label">
           <span>
-            Day <b>{expectedDay}</b> of 180
+            Day <b>{expectedDay}</b> of {plan.totalDays}
           </span>
           <span>{pct}% complete</span>
         </div>
         <div className="ribbon-track">
-          <div className="ribbon-fill" style={{ width: `${pct}%` }}>
+          <div className="ribbon-fill" style={{ width: `${Math.min(100, pct)}%` }}>
             <div className="ribbon-tail" />
           </div>
         </div>

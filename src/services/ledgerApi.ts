@@ -1,17 +1,21 @@
 import { supabase, isSupabaseConfigured } from './supabase';
-import { LedgerMeta, ProgressMap } from '../types';
+import { LedgerMeta, ProgressMap, ReflectionsMap, ReflectionNote, PlanId } from '../types';
 import { safeGet, safeSet } from './storage';
+import { DEFAULT_PLAN_ID } from '../data/plans';
 
 const DEFAULT_LEDGER_CODE = 'BSG-MAIN';
 
 export const ledgerApi = {
   /**
-   * Load the primary community ledger and all progress.
+   * Load the primary community ledger, reading progress, and reflections.
    */
-  async loadLedger(): Promise<{ meta: LedgerMeta | null; progress: ProgressMap }> {
+  async loadLedger(): Promise<{
+    meta: LedgerMeta | null;
+    progress: ProgressMap;
+    reflections: ReflectionsMap;
+  }> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        // Fetch the active community ledger (or the most recent one)
         const { data: ledger, error: ledgerErr } = await supabase
           .from('ledgers')
           .select('*')
@@ -20,14 +24,14 @@ export const ledgerApi = {
           .maybeSingle();
 
         if (!ledgerErr && ledger) {
-          // Fetch all members in this ledger
+          // Fetch members
           const { data: members } = await supabase
             .from('members')
             .select('name')
             .eq('ledger_id', ledger.id)
             .order('created_at', { ascending: true });
 
-          // Fetch all reading progress
+          // Fetch progress
           const { data: progressRows } = await supabase
             .from('reading_progress')
             .select('day_number, member_name')
@@ -41,17 +45,40 @@ export const ledgerApi = {
             progress[row.day_number].push(row.member_name);
           });
 
+          // Fetch reflections
+          const { data: reflectionRows } = await supabase
+            .from('reflections')
+            .select('id, day_number, member_name, note, created_at')
+            .eq('ledger_id', ledger.id)
+            .order('created_at', { ascending: true });
+
+          const reflections: ReflectionsMap = {};
+          (reflectionRows || []).forEach((row) => {
+            if (!reflections[row.day_number]) {
+              reflections[row.day_number] = [];
+            }
+            reflections[row.day_number].push({
+              id: row.id,
+              day: row.day_number,
+              author: row.member_name,
+              text: row.note,
+              createdAt: row.created_at,
+            });
+          });
+
           const meta: LedgerMeta = {
             code: ledger.code,
             title: ledger.title,
+            planId: (ledger.plan_id as PlanId) || DEFAULT_PLAN_ID,
             startDate: ledger.start_date,
             members: (members || []).map((m) => m.name),
           };
 
           await safeSet('meta', meta, true);
           await safeSet('progress', progress, true);
+          await safeSet('reflections', reflections, true);
 
-          return { meta, progress };
+          return { meta, progress, reflections };
         }
       } catch (err) {
         console.warn('Failed to load from Supabase, fallback to local storage:', err);
@@ -61,15 +88,17 @@ export const ledgerApi = {
     // Fallback to local storage
     const meta = await safeGet<LedgerMeta>('meta', true);
     const progress = (await safeGet<ProgressMap>('progress', true)) || {};
-    return { meta, progress };
+    const reflections = (await safeGet<ReflectionsMap>('reflections', true)) || {};
+    return { meta, progress, reflections };
   },
 
   /**
-   * Initialize the community reading ledger (first time setup).
+   * Initialize community reading ledger with selected plan.
    */
   async createLedger(
     creatorName: string,
     startDate: string,
+    planId: PlanId = DEFAULT_PLAN_ID,
     title = 'Through the Book, Together'
   ): Promise<LedgerMeta> {
     const code = DEFAULT_LEDGER_CODE;
@@ -79,7 +108,7 @@ export const ledgerApi = {
         const { data: ledger, error: ledgerErr } = await supabase
           .from('ledgers')
           .upsert(
-            [{ code, title, start_date: startDate }],
+            [{ code, title, plan_id: planId, start_date: startDate }],
             { onConflict: 'code' }
           )
           .select()
@@ -96,6 +125,7 @@ export const ledgerApi = {
           const meta: LedgerMeta = {
             code: ledger.code,
             title: ledger.title,
+            planId,
             startDate: ledger.start_date,
             members: [creatorName],
           };
@@ -103,6 +133,7 @@ export const ledgerApi = {
           await safeSet('my-identity', { name: creatorName }, false);
           await safeSet('meta', meta, true);
           await safeSet('progress', {}, true);
+          await safeSet('reflections', {}, true);
 
           return meta;
         }
@@ -114,21 +145,44 @@ export const ledgerApi = {
     const localMeta: LedgerMeta = {
       code,
       title,
+      planId,
       startDate,
       members: [creatorName],
     };
     await safeSet('my-identity', { name: creatorName }, false);
     await safeSet('meta', localMeta, true);
     await safeSet('progress', {}, true);
+    await safeSet('reflections', {}, true);
     return localMeta;
   },
 
   /**
-   * Join the community reading ledger with reader name.
+   * Update the reading plan for the ledger.
+   */
+  async updatePlan(planId: PlanId, currentMeta: LedgerMeta): Promise<LedgerMeta> {
+    const updated: LedgerMeta = { ...currentMeta, planId };
+
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        await supabase
+          .from('ledgers')
+          .update({ plan_id: planId })
+          .eq('code', currentMeta.code || DEFAULT_LEDGER_CODE);
+      } catch (err) {
+        console.warn('Failed to update plan in Supabase:', err);
+      }
+    }
+
+    await safeSet('meta', updated, true);
+    return updated;
+  },
+
+  /**
+   * Join the community reading ledger.
    */
   async joinLedger(
     name: string
-  ): Promise<{ meta: LedgerMeta; progress: ProgressMap } | null> {
+  ): Promise<{ meta: LedgerMeta; progress: ProgressMap; reflections: ReflectionsMap } | null> {
     if (isSupabaseConfigured() && supabase) {
       try {
         const { data: ledger } = await supabase
@@ -139,7 +193,6 @@ export const ledgerApi = {
           .maybeSingle();
 
         if (ledger) {
-          // Add member
           await supabase
             .from('members')
             .upsert(
@@ -150,7 +203,11 @@ export const ledgerApi = {
           await safeSet('my-identity', { name }, false);
           const loaded = await this.loadLedger();
           if (loaded.meta) {
-            return { meta: loaded.meta, progress: loaded.progress };
+            return {
+              meta: loaded.meta,
+              progress: loaded.progress,
+              reflections: loaded.reflections,
+            };
           }
         }
       } catch (err) {
@@ -168,14 +225,15 @@ export const ledgerApi = {
       await safeSet('my-identity', { name }, false);
       await safeSet('meta', updatedMeta, true);
       const progress = (await safeGet<ProgressMap>('progress', true)) || {};
-      return { meta: updatedMeta, progress };
+      const reflections = (await safeGet<ReflectionsMap>('reflections', true)) || {};
+      return { meta: updatedMeta, progress, reflections };
     }
 
     return null;
   },
 
   /**
-   * Toggle reading day for a member.
+   * Toggle reading day.
    */
   async toggleDay(
     day: number,
@@ -238,7 +296,57 @@ export const ledgerApi = {
   },
 
   /**
-   * Subscribe to realtime progress & member changes for the group.
+   * Save a spiritual reflection note.
+   */
+  async saveReflection(
+    day: number,
+    author: string,
+    noteText: string,
+    currentReflections: ReflectionsMap
+  ): Promise<ReflectionsMap> {
+    const newNote: ReflectionNote = {
+      day,
+      author,
+      text: noteText,
+      createdAt: new Date().toISOString(),
+    };
+
+    const dayNotes = [...(currentReflections[day] || []), newNote];
+    const updatedReflections: ReflectionsMap = {
+      ...currentReflections,
+      [day]: dayNotes,
+    };
+
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { data: ledger } = await supabase
+          .from('ledgers')
+          .select('id')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (ledger) {
+          await supabase.from('reflections').insert([
+            {
+              ledger_id: ledger.id,
+              day_number: day,
+              member_name: author,
+              note: noteText,
+            },
+          ]);
+        }
+      } catch (err) {
+        console.warn('Supabase saveReflection error:', err);
+      }
+    }
+
+    await safeSet('reflections', updatedReflections, true);
+    return updatedReflections;
+  },
+
+  /**
+   * Subscribe to realtime progress, members, and reflections.
    */
   subscribeToChanges(onChange: () => void): () => void {
     if (!isSupabaseConfigured() || !supabase) {
@@ -260,6 +368,11 @@ export const ledgerApi = {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'ledgers' },
+        () => onChange()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reflections' },
         () => onChange()
       )
       .subscribe();
