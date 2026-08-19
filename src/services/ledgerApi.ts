@@ -2,55 +2,56 @@ import { supabase, isSupabaseConfigured } from './supabase';
 import { LedgerMeta, ProgressMap } from '../types';
 import { safeGet, safeSet } from './storage';
 
+const DEFAULT_LEDGER_CODE = 'BSG-MAIN';
+
 export const ledgerApi = {
   /**
-   * Load ledger metadata and reading progress.
+   * Load the primary community ledger and all progress.
    */
-  async loadLedger(code?: string): Promise<{ meta: LedgerMeta | null; progress: ProgressMap }> {
+  async loadLedger(): Promise<{ meta: LedgerMeta | null; progress: ProgressMap }> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const ledgerCode = code || (await safeGet<string>('current-ledger-code', false));
-        if (ledgerCode) {
-          const { data: ledger, error: ledgerErr } = await supabase
-            .from('ledgers')
-            .select('*')
-            .eq('code', ledgerCode)
-            .single();
+        // Fetch the active community ledger (or the most recent one)
+        const { data: ledger, error: ledgerErr } = await supabase
+          .from('ledgers')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-          if (!ledgerErr && ledger) {
-            // Fetch members
-            const { data: members } = await supabase
-              .from('members')
-              .select('name')
-              .eq('ledger_id', ledger.id);
+        if (!ledgerErr && ledger) {
+          // Fetch all members in this ledger
+          const { data: members } = await supabase
+            .from('members')
+            .select('name')
+            .eq('ledger_id', ledger.id)
+            .order('created_at', { ascending: true });
 
-            // Fetch progress
-            const { data: progressRows } = await supabase
-              .from('reading_progress')
-              .select('day_number, member_name')
-              .eq('ledger_id', ledger.id);
+          // Fetch all reading progress
+          const { data: progressRows } = await supabase
+            .from('reading_progress')
+            .select('day_number, member_name')
+            .eq('ledger_id', ledger.id);
 
-            const progress: ProgressMap = {};
-            (progressRows || []).forEach((row) => {
-              if (!progress[row.day_number]) {
-                progress[row.day_number] = [];
-              }
-              progress[row.day_number].push(row.member_name);
-            });
+          const progress: ProgressMap = {};
+          (progressRows || []).forEach((row) => {
+            if (!progress[row.day_number]) {
+              progress[row.day_number] = [];
+            }
+            progress[row.day_number].push(row.member_name);
+          });
 
-            const meta: LedgerMeta = {
-              code: ledger.code,
-              title: ledger.title,
-              startDate: ledger.start_date,
-              members: (members || []).map((m) => m.name),
-            };
+          const meta: LedgerMeta = {
+            code: ledger.code,
+            title: ledger.title,
+            startDate: ledger.start_date,
+            members: (members || []).map((m) => m.name),
+          };
 
-            await safeSet('meta', meta, true);
-            await safeSet('progress', progress, true);
-            await safeSet('current-ledger-code', ledger.code, false);
+          await safeSet('meta', meta, true);
+          await safeSet('progress', progress, true);
 
-            return { meta, progress };
-          }
+          return { meta, progress };
         }
       } catch (err) {
         console.warn('Failed to load from Supabase, fallback to local storage:', err);
@@ -64,25 +65,33 @@ export const ledgerApi = {
   },
 
   /**
-   * Create a new group ledger in Supabase (or local storage).
+   * Initialize the community reading ledger (first time setup).
    */
   async createLedger(
     creatorName: string,
     startDate: string,
-    title = 'Six-Month Bible Reading Ledger'
+    title = 'Through the Book, Together'
   ): Promise<LedgerMeta> {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const code = DEFAULT_LEDGER_CODE;
 
     if (isSupabaseConfigured() && supabase) {
       try {
         const { data: ledger, error: ledgerErr } = await supabase
           .from('ledgers')
-          .insert([{ code, title, start_date: startDate }])
+          .upsert(
+            [{ code, title, start_date: startDate }],
+            { onConflict: 'code' }
+          )
           .select()
           .single();
 
         if (!ledgerErr && ledger) {
-          await supabase.from('members').insert([{ ledger_id: ledger.id, name: creatorName }]);
+          await supabase
+            .from('members')
+            .upsert(
+              [{ ledger_id: ledger.id, name: creatorName }],
+              { onConflict: 'ledger_id,name' }
+            );
 
           const meta: LedgerMeta = {
             code: ledger.code,
@@ -91,7 +100,6 @@ export const ledgerApi = {
             members: [creatorName],
           };
 
-          await safeSet('current-ledger-code', ledger.code, false);
           await safeSet('my-identity', { name: creatorName }, false);
           await safeSet('meta', meta, true);
           await safeSet('progress', {}, true);
@@ -99,7 +107,7 @@ export const ledgerApi = {
           return meta;
         }
       } catch (err) {
-        console.warn('Supabase createLedger failed, fallback to local storage:', err);
+        console.warn('Supabase createLedger failed, using local storage:', err);
       }
     }
 
@@ -116,35 +124,33 @@ export const ledgerApi = {
   },
 
   /**
-   * Join an existing ledger with code.
+   * Join the community reading ledger with reader name.
    */
   async joinLedger(
-    name: string,
-    code?: string
+    name: string
   ): Promise<{ meta: LedgerMeta; progress: ProgressMap } | null> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const ledgerCode = code || (await safeGet<string>('current-ledger-code', false));
-        if (ledgerCode) {
-          const { data: ledger } = await supabase
-            .from('ledgers')
-            .select('*')
-            .eq('code', ledgerCode)
-            .single();
+        const { data: ledger } = await supabase
+          .from('ledgers')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-          if (ledger) {
-            // Add member if not present
-            await supabase
-              .from('members')
-              .insert([{ ledger_id: ledger.id, name }])
-              .select()
-              .maybeSingle();
+        if (ledger) {
+          // Add member
+          await supabase
+            .from('members')
+            .upsert(
+              [{ ledger_id: ledger.id, name }],
+              { onConflict: 'ledger_id,name' }
+            );
 
-            await safeSet('my-identity', { name }, false);
-            const loaded = await this.loadLedger(ledger.code);
-            if (loaded.meta) {
-              return { meta: loaded.meta, progress: loaded.progress };
-            }
+          await safeSet('my-identity', { name }, false);
+          const loaded = await this.loadLedger();
+          if (loaded.meta) {
+            return { meta: loaded.meta, progress: loaded.progress };
           }
         }
       } catch (err) {
@@ -169,13 +175,12 @@ export const ledgerApi = {
   },
 
   /**
-   * Toggle a reading day for a member.
+   * Toggle reading day for a member.
    */
   async toggleDay(
     day: number,
     memberName: string,
-    currentProgress: ProgressMap,
-    ledgerCode?: string
+    currentProgress: ProgressMap
   ): Promise<ProgressMap> {
     const readers = currentProgress[day] ? [...currentProgress[day]] : [];
     const isCompleted = readers.includes(memberName);
@@ -191,35 +196,36 @@ export const ledgerApi = {
 
     if (isSupabaseConfigured() && supabase) {
       try {
-        const code = ledgerCode || (await safeGet<string>('current-ledger-code', false));
-        if (code) {
-          const { data: ledger } = await supabase
-            .from('ledgers')
-            .select('id')
-            .eq('code', code)
-            .single();
+        const { data: ledger } = await supabase
+          .from('ledgers')
+          .select('id')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-          if (ledger) {
-            if (isCompleted) {
-              await supabase
-                .from('reading_progress')
-                .delete()
-                .match({
-                  ledger_id: ledger.id,
-                  day_number: day,
-                  member_name: memberName,
-                });
-            } else {
-              await supabase
-                .from('reading_progress')
-                .insert([
+        if (ledger) {
+          if (isCompleted) {
+            await supabase
+              .from('reading_progress')
+              .delete()
+              .match({
+                ledger_id: ledger.id,
+                day_number: day,
+                member_name: memberName,
+              });
+          } else {
+            await supabase
+              .from('reading_progress')
+              .upsert(
+                [
                   {
                     ledger_id: ledger.id,
                     day_number: day,
                     member_name: memberName,
                   },
-                ]);
-            }
+                ],
+                { onConflict: 'ledger_id,day_number,member_name' }
+              );
           }
         }
       } catch (err) {
@@ -232,18 +238,15 @@ export const ledgerApi = {
   },
 
   /**
-   * Subscribe to realtime progress & member changes.
+   * Subscribe to realtime progress & member changes for the group.
    */
-  subscribeToChanges(
-    ledgerCode: string | undefined,
-    onChange: () => void
-  ): () => void {
-    if (!isSupabaseConfigured() || !supabase || !ledgerCode) {
+  subscribeToChanges(onChange: () => void): () => void {
+    if (!isSupabaseConfigured() || !supabase) {
       return () => {};
     }
 
     const channel = supabase
-      .channel(`ledger-${ledgerCode}`)
+      .channel('bsg-community-channel')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'reading_progress' },
@@ -252,6 +255,11 @@ export const ledgerApi = {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'members' },
+        () => onChange()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ledgers' },
         () => onChange()
       )
       .subscribe();

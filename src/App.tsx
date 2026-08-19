@@ -37,12 +37,10 @@ export const App: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  // Realtime subscription
+  // Realtime subscription for single group
   useEffect(() => {
-    if (!meta?.code) return;
-
-    const unsubscribe = ledgerApi.subscribeToChanges(meta.code, async () => {
-      const { meta: refreshedMeta, progress: refreshedProgress } = await ledgerApi.loadLedger(meta.code);
+    const unsubscribe = ledgerApi.subscribeToChanges(async () => {
+      const { meta: refreshedMeta, progress: refreshedProgress } = await ledgerApi.loadLedger();
       if (refreshedMeta) setMeta(refreshedMeta);
       setProgress(refreshedProgress);
     });
@@ -50,7 +48,7 @@ export const App: React.FC = () => {
     return () => {
       unsubscribe();
     };
-  }, [meta?.code]);
+  }, []);
 
   const handleStartSetup = async (name: string, startDate: string) => {
     setLoading(true);
@@ -66,16 +64,14 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleJoin = async (name: string, code?: string) => {
+  const handleJoin = async (name: string) => {
     setLoading(true);
     try {
-      const result = await ledgerApi.joinLedger(name, code);
+      const result = await ledgerApi.joinLedger(name);
       if (result) {
         setMe(name);
         setMeta(result.meta);
         setProgress(result.progress);
-      } else {
-        alert('Group code not found. Please verify the code.');
       }
     } catch (err) {
       console.error('Failed to join ledger:', err);
@@ -101,7 +97,7 @@ export const App: React.FC = () => {
   const handleToggleDay = async (day: number) => {
     if (!me) return;
 
-    const newProgress = await ledgerApi.toggleDay(day, me, progress, meta?.code);
+    const newProgress = await ledgerApi.toggleDay(day, me, progress);
     setProgress(newProgress);
   };
 

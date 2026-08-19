@@ -5,7 +5,7 @@ import { formatDate } from '../utils';
 interface OnboardingProps {
   meta: LedgerMeta | null;
   onStartSetup: (name: string, startDate: string) => Promise<void>;
-  onJoin: (name: string, code?: string) => Promise<void>;
+  onJoin: (name: string) => Promise<void>;
 }
 
 export const Onboarding: React.FC<OnboardingProps> = ({
@@ -13,9 +13,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   onStartSetup,
   onJoin,
 }) => {
-  const [tab, setTab] = useState<'create' | 'join'>('create');
   const [name, setName] = useState('');
-  const [code, setCode] = useState('');
   const [startDate, setStartDate] = useState(
     () => new Date().toISOString().slice(0, 10)
   );
@@ -26,42 +24,25 @@ export const Onboarding: React.FC<OnboardingProps> = ({
     if (!trimmedName) return;
 
     if (!meta) {
-      if (tab === 'create') {
-        if (!startDate) return;
-        await onStartSetup(trimmedName, startDate);
-      } else {
-        await onJoin(trimmedName, code.trim().toUpperCase());
-      }
+      if (!startDate) return;
+      await onStartSetup(trimmedName, startDate);
     } else {
-      await onJoin(trimmedName, meta.code);
+      await onJoin(trimmedName);
     }
+  };
+
+  const handleSelectExisting = async (existingName: string) => {
+    await onJoin(existingName);
   };
 
   if (!meta) {
     return (
       <div className="onboard">
         <p className="eyebrow">Bible Study Guide</p>
-        <h1>Bible Reading Ledger</h1>
+        <h1>Start today!</h1>
         <p className="sub">
-          1,189 chapters across 180 days (~6-7 chapters/day). Read together and track progress in real-time.
+          1,189 chapters across 180 days (~6-7 chapters/day).<br /> Enter your name and the start date.
         </p>
-
-        <div className="tab-switch">
-          <button
-            type="button"
-            className={`tab-btn ${tab === 'create' ? 'active' : ''}`}
-            onClick={() => setTab('create')}
-          >
-            Create New Group
-          </button>
-          <button
-            type="button"
-            className={`tab-btn ${tab === 'join' ? 'active' : ''}`}
-            onClick={() => setTab('join')}
-          >
-            Join Existing Group
-          </button>
-        </div>
 
         <form onSubmit={handleSubmit}>
           <input
@@ -72,27 +53,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({
             autoFocus
             required
           />
-
-          {tab === 'create' ? (
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              required
-            />
-          ) : (
-            <input
-              type="text"
-              placeholder="6-character Group Code (e.g. AB12CD)"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              maxLength={10}
-              required
-            />
-          )}
-
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            required
+          />
           <button type="submit" className="btn">
-            {tab === 'create' ? 'Begin Challenge' : 'Join Group'}
+            Begin Challenge
           </button>
         </form>
       </div>
@@ -101,23 +69,43 @@ export const Onboarding: React.FC<OnboardingProps> = ({
 
   return (
     <div className="onboard">
-      <p className="eyebrow">Joining a ledger already in progress</p>
-      <h1>What's your name?</h1>
+      <p className="eyebrow">Six-month reading ledger</p>
+      <h1>Through the Book, Together</h1>
       <p className="sub">
         Started {formatDate(new Date(meta.startDate + 'T00:00:00'))} ·{' '}
-        {meta.members.length} reader{meta.members.length !== 1 ? 's' : ''} so far
+        {meta.members.length} reader{meta.members.length !== 1 ? 's' : ''} in the group
       </p>
-      <form onSubmit={handleSubmit}>
+
+      {meta.members.length > 0 && (
+        <div className="onboard-existing">
+          <p className="onboard-hint">Returning reader? Tap your name:</p>
+          <div className="onboard-members-grid">
+            {meta.members.map((memberName) => (
+              <button
+                key={memberName}
+                type="button"
+                className="onboard-member-chip"
+                onClick={() => handleSelectExisting(memberName)}
+              >
+                {memberName}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="onboard-name-form">
+        <p className="onboard-hint">Or join with a new name:</p>
         <input
           type="text"
-          placeholder="Your name"
+          placeholder="Enter your name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          autoFocus
+          autoFocus={meta.members.length === 0}
           required
         />
         <button type="submit" className="btn">
-          Join
+          Join Ledger
         </button>
       </form>
     </div>
