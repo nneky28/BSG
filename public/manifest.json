@@ -1,0 +1,20 @@
+{
+  "name": "Bible Study Guide - 180 Day Ledger",
+  "short_name": "BSG Ledger",
+  "description": "Six-month community Bible reading ledger across 1,189 chapters.",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "background_color": "#141d19",
+  "theme_color": "#141d19",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["lifestyle", "books", "education"]
+}
