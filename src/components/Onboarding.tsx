@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { LedgerMeta, PlanId } from '../types';
+import { LedgerMeta } from '../types';
 import { formatDate } from '../utils';
-import { READING_PLANS, DEFAULT_PLAN_ID } from '../data/plans';
 
 interface OnboardingProps {
   meta: LedgerMeta | null;
-  onStartSetup: (name: string, startDate: string, planId: PlanId) => Promise<void>;
+  onStartSetup: (name: string, startDate: string) => Promise<void>;
   onJoin: (name: string) => Promise<void>;
 }
 
@@ -15,7 +14,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   onJoin,
 }) => {
   const [name, setName] = useState('');
-  const [selectedPlanId, setSelectedPlanId] = useState<PlanId>(DEFAULT_PLAN_ID);
   const [startDate, setStartDate] = useState(
     () => new Date().toISOString().slice(0, 10)
   );
@@ -27,7 +25,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({
 
     if (!meta) {
       if (!startDate) return;
-      await onStartSetup(trimmedName, startDate, selectedPlanId);
+      await onStartSetup(trimmedName, startDate);
     } else {
       await onJoin(trimmedName);
     }
@@ -38,44 +36,24 @@ export const Onboarding: React.FC<OnboardingProps> = ({
   };
 
   if (!meta) {
-    const plans = Object.values(READING_PLANS);
-
     return (
       <div className="onboard">
-        <p className="eyebrow">Bible Study Guide</p>
-        <h1>Set Up the Reading Ledger</h1>
+        <p className="eyebrow">Bible Study Guide (BSG)</p>
+        <h1>Through the Book, Together</h1>
         <p className="sub">
-          Through the Book, Together. Choose the pacing that best suits your community.
+          A progressive journey through all 1,189 chapters of the Bible and scripture meditation.
         </p>
 
         <form onSubmit={handleSubmit}>
+          <label className="onboard-label">Your Name (Initiating Reader):</label>
           <input
             type="text"
-            placeholder="Your name (Community leader / reader)"
+            placeholder="Your name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
             required
           />
-
-          <div className="onboard-plan-picker">
-            <label className="onboard-label">Choose Reading Pacing:</label>
-            <div className="onboard-plan-options">
-              {plans.map((p) => (
-                <div
-                  key={p.id}
-                  className={`plan-option-chip ${selectedPlanId === p.id ? 'active' : ''}`}
-                  onClick={() => setSelectedPlanId(p.id)}
-                >
-                  <div className="chip-header">
-                    <b>{p.title}</b>
-                    <span>~{p.avgChaptersPerDay} ch/day</span>
-                  </div>
-                  <p className="chip-desc">{p.tagline}</p>
-                </div>
-              ))}
-            </div>
-          </div>
 
           <label className="onboard-label">Start Date:</label>
           <input
@@ -86,22 +64,20 @@ export const Onboarding: React.FC<OnboardingProps> = ({
           />
 
           <button type="submit" className="btn">
-            Begin Community Challenge
+            Begin Community Reading
           </button>
         </form>
       </div>
     );
   }
 
-  const activePlan = READING_PLANS[meta.planId || DEFAULT_PLAN_ID] || READING_PLANS[DEFAULT_PLAN_ID];
-
   return (
     <div className="onboard">
-      <p className="eyebrow">{activePlan.title} · {activePlan.totalDays} Days</p>
+      <p className="eyebrow">27-Week Progressive Bible Reading</p>
       <h1>Through the Book, Together</h1>
       <p className="sub">
         Started {formatDate(new Date(meta.startDate + 'T00:00:00'))} ·{' '}
-        {meta.members.length} reader{meta.members.length !== 1 ? 's' : ''} reading together (~{activePlan.avgChaptersPerDay} ch/day)
+        {meta.members.length} reader{meta.members.length !== 1 ? 's' : ''} in the fellowship
       </p>
 
       {meta.members.length > 0 && (
@@ -123,17 +99,17 @@ export const Onboarding: React.FC<OnboardingProps> = ({
       )}
 
       <form onSubmit={handleSubmit} className="onboard-name-form">
-        <p className="onboard-hint">Or enter your name to join:</p>
+        <p className="onboard-hint">Or join with a new name:</p>
         <input
           type="text"
-          placeholder="Your name"
+          placeholder="Enter your name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoFocus={meta.members.length === 0}
           required
         />
         <button type="submit" className="btn">
-          Join Ledger
+          Join Fellowship Ledger
         </button>
       </form>
     </div>

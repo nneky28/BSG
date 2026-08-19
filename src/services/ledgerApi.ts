@@ -1,18 +1,18 @@
 import { supabase, isSupabaseConfigured } from './supabase';
-import { LedgerMeta, ProgressMap, ReflectionsMap, ReflectionNote, PlanId } from '../types';
+import { LedgerMeta, ProgressMap, ReflectionsMap, ReflectionNote, PrayerRequest } from '../types';
 import { safeGet, safeSet } from './storage';
-import { DEFAULT_PLAN_ID } from '../data/plans';
 
 const DEFAULT_LEDGER_CODE = 'BSG-MAIN';
 
 export const ledgerApi = {
   /**
-   * Load the primary community ledger, reading progress, and reflections.
+   * Load the primary community ledger, progress, reflections, and prayers.
    */
-  async loadLedger(): Promise<{
+  async loadLedger(currentUser?: string | null): Promise<{
     meta: LedgerMeta | null;
     progress: ProgressMap;
     reflections: ReflectionsMap;
+    prayerRequests: PrayerRequest[];
   }> {
     if (isSupabaseConfigured() && supabase) {
       try {
@@ -48,28 +48,47 @@ export const ledgerApi = {
           // Fetch reflections
           const { data: reflectionRows } = await supabase
             .from('reflections')
-            .select('id, day_number, member_name, note, created_at')
+            .select('id, day_number, member_name, note, is_public, created_at')
             .eq('ledger_id', ledger.id)
             .order('created_at', { ascending: true });
 
           const reflections: ReflectionsMap = {};
           (reflectionRows || []).forEach((row) => {
-            if (!reflections[row.day_number]) {
-              reflections[row.day_number] = [];
+            const isMine = currentUser && row.member_name === currentUser;
+            if (row.is_public || isMine) {
+              if (!reflections[row.day_number]) {
+                reflections[row.day_number] = [];
+              }
+              reflections[row.day_number].push({
+                id: row.id,
+                day: row.day_number,
+                author: row.member_name,
+                text: row.note,
+                isPublic: row.is_public,
+                createdAt: row.created_at,
+              });
             }
-            reflections[row.day_number].push({
-              id: row.id,
-              day: row.day_number,
-              author: row.member_name,
-              text: row.note,
-              createdAt: row.created_at,
-            });
           });
+
+          // Fetch prayer requests
+          const { data: prayerRows } = await supabase
+            .from('prayer_requests')
+            .select('id, author, week_number, text, is_answered, created_at')
+            .eq('ledger_id', ledger.id)
+            .order('created_at', { ascending: false });
+
+          const prayerRequests: PrayerRequest[] = (prayerRows || []).map((p) => ({
+            id: p.id,
+            author: p.author,
+            week: p.week_number,
+            text: p.text,
+            isAnswered: p.is_answered,
+            createdAt: p.created_at,
+          }));
 
           const meta: LedgerMeta = {
             code: ledger.code,
             title: ledger.title,
-            planId: (ledger.plan_id as PlanId) || DEFAULT_PLAN_ID,
             startDate: ledger.start_date,
             members: (members || []).map((m) => m.name),
           };
@@ -77,11 +96,12 @@ export const ledgerApi = {
           await safeSet('meta', meta, true);
           await safeSet('progress', progress, true);
           await safeSet('reflections', reflections, true);
+          await safeSet('prayerRequests', prayerRequests, true);
 
-          return { meta, progress, reflections };
+          return { meta, progress, reflections, prayerRequests };
         }
       } catch (err) {
-        console.warn('Failed to load from Supabase, fallback to local storage:', err);
+        console.warn('Failed to load from Supabase, using local storage:', err);
       }
     }
 
@@ -89,16 +109,16 @@ export const ledgerApi = {
     const meta = await safeGet<LedgerMeta>('meta', true);
     const progress = (await safeGet<ProgressMap>('progress', true)) || {};
     const reflections = (await safeGet<ReflectionsMap>('reflections', true)) || {};
-    return { meta, progress, reflections };
+    const prayerRequests = (await safeGet<PrayerRequest[]>('prayerRequests', true)) || [];
+    return { meta, progress, reflections, prayerRequests };
   },
 
   /**
-   * Initialize community reading ledger with selected plan.
+   * Initialize community reading ledger.
    */
   async createLedger(
     creatorName: string,
     startDate: string,
-    planId: PlanId = DEFAULT_PLAN_ID,
     title = 'Through the Book, Together'
   ): Promise<LedgerMeta> {
     const code = DEFAULT_LEDGER_CODE;
@@ -108,7 +128,7 @@ export const ledgerApi = {
         const { data: ledger, error: ledgerErr } = await supabase
           .from('ledgers')
           .upsert(
-            [{ code, title, plan_id: planId, start_date: startDate }],
+            [{ code, title, start_date: startDate }],
             { onConflict: 'code' }
           )
           .select()
@@ -125,7 +145,6 @@ export const ledgerApi = {
           const meta: LedgerMeta = {
             code: ledger.code,
             title: ledger.title,
-            planId,
             startDate: ledger.start_date,
             members: [creatorName],
           };
@@ -134,6 +153,7 @@ export const ledgerApi = {
           await safeSet('meta', meta, true);
           await safeSet('progress', {}, true);
           await safeSet('reflections', {}, true);
+          await safeSet('prayerRequests', [], true);
 
           return meta;
         }
@@ -145,7 +165,6 @@ export const ledgerApi = {
     const localMeta: LedgerMeta = {
       code,
       title,
-      planId,
       startDate,
       members: [creatorName],
     };
@@ -153,28 +172,8 @@ export const ledgerApi = {
     await safeSet('meta', localMeta, true);
     await safeSet('progress', {}, true);
     await safeSet('reflections', {}, true);
+    await safeSet('prayerRequests', [], true);
     return localMeta;
-  },
-
-  /**
-   * Update the reading plan for the ledger.
-   */
-  async updatePlan(planId: PlanId, currentMeta: LedgerMeta): Promise<LedgerMeta> {
-    const updated: LedgerMeta = { ...currentMeta, planId };
-
-    if (isSupabaseConfigured() && supabase) {
-      try {
-        await supabase
-          .from('ledgers')
-          .update({ plan_id: planId })
-          .eq('code', currentMeta.code || DEFAULT_LEDGER_CODE);
-      } catch (err) {
-        console.warn('Failed to update plan in Supabase:', err);
-      }
-    }
-
-    await safeSet('meta', updated, true);
-    return updated;
   },
 
   /**
@@ -182,7 +181,12 @@ export const ledgerApi = {
    */
   async joinLedger(
     name: string
-  ): Promise<{ meta: LedgerMeta; progress: ProgressMap; reflections: ReflectionsMap } | null> {
+  ): Promise<{
+    meta: LedgerMeta;
+    progress: ProgressMap;
+    reflections: ReflectionsMap;
+    prayerRequests: PrayerRequest[];
+  } | null> {
     if (isSupabaseConfigured() && supabase) {
       try {
         const { data: ledger } = await supabase
@@ -201,12 +205,13 @@ export const ledgerApi = {
             );
 
           await safeSet('my-identity', { name }, false);
-          const loaded = await this.loadLedger();
+          const loaded = await this.loadLedger(name);
           if (loaded.meta) {
             return {
               meta: loaded.meta,
               progress: loaded.progress,
               reflections: loaded.reflections,
+              prayerRequests: loaded.prayerRequests,
             };
           }
         }
@@ -226,7 +231,8 @@ export const ledgerApi = {
       await safeSet('meta', updatedMeta, true);
       const progress = (await safeGet<ProgressMap>('progress', true)) || {};
       const reflections = (await safeGet<ReflectionsMap>('reflections', true)) || {};
-      return { meta: updatedMeta, progress, reflections };
+      const prayerRequests = (await safeGet<PrayerRequest[]>('prayerRequests', true)) || [];
+      return { meta: updatedMeta, progress, reflections, prayerRequests };
     }
 
     return null;
@@ -296,18 +302,20 @@ export const ledgerApi = {
   },
 
   /**
-   * Save a spiritual reflection note.
+   * Save a reflection note (private by default or shared).
    */
   async saveReflection(
     day: number,
     author: string,
     noteText: string,
+    isPublic: boolean,
     currentReflections: ReflectionsMap
   ): Promise<ReflectionsMap> {
     const newNote: ReflectionNote = {
       day,
       author,
       text: noteText,
+      isPublic,
       createdAt: new Date().toISOString(),
     };
 
@@ -333,6 +341,7 @@ export const ledgerApi = {
               day_number: day,
               member_name: author,
               note: noteText,
+              is_public: isPublic,
             },
           ]);
         }
@@ -346,7 +355,62 @@ export const ledgerApi = {
   },
 
   /**
-   * Subscribe to realtime progress, members, and reflections.
+   * Add a weekly prayer request.
+   */
+  async addPrayerRequest(
+    author: string,
+    week: number,
+    text: string,
+    currentPrayers: PrayerRequest[]
+  ): Promise<PrayerRequest[]> {
+    const newPrayer: PrayerRequest = {
+      id: Math.random().toString(36).substring(2, 9),
+      author,
+      week,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updated = [newPrayer, ...currentPrayers];
+
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { data: ledger } = await supabase
+          .from('ledgers')
+          .select('id')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (ledger) {
+          const { data: inserted } = await supabase
+            .from('prayer_requests')
+            .insert([
+              {
+                ledger_id: ledger.id,
+                author,
+                week_number: week,
+                text,
+              },
+            ])
+            .select()
+            .single();
+
+          if (inserted) {
+            newPrayer.id = inserted.id;
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase addPrayerRequest error:', err);
+      }
+    }
+
+    await safeSet('prayerRequests', updated, true);
+    return updated;
+  },
+
+  /**
+   * Subscribe to realtime progress, members, reflections, and prayers.
    */
   subscribeToChanges(onChange: () => void): () => void {
     if (!isSupabaseConfigured() || !supabase) {
@@ -373,6 +437,11 @@ export const ledgerApi = {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'reflections' },
+        () => onChange()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'prayer_requests' },
         () => onChange()
       )
       .subscribe();

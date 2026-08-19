@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { LedgerMeta, ProgressMap, ReflectionsMap, ScheduleDay, PlanId, FilterView } from './types';
-import { READING_PLANS, DEFAULT_PLAN_ID } from './data/plans';
+import { LedgerMeta, ProgressMap, ReflectionsMap, PrayerRequest } from './types';
+import { CUSTOM_SCHEDULE, TOTAL_CUSTOM_DAYS, CustomDayEntry } from './data/customSchedule';
 import { safeGet, safeSet } from './services/storage';
 import { ledgerApi } from './services/ledgerApi';
-import { getTodayIndex, getMissedDays } from './utils';
+import { getTodayIndex } from './utils';
+import { calculateGraceBuffer } from './services/bufferEngine';
 import { HeroCard } from './components/HeroCard';
-import { TodayCard } from './components/TodayCard';
-import { CatchUpBanner } from './components/CatchUpBanner';
+import { WeeklyMemoryVerse } from './components/WeeklyMemoryVerse';
+import { DailyCard } from './components/DailyCard';
+import { PrayerRequestsCard } from './components/PrayerRequestsCard';
 import { LeaderboardCard } from './components/LeaderboardCard';
 import { WeekAccordion } from './components/WeekAccordion';
 import { Onboarding } from './components/Onboarding';
 import { IdentityModal } from './components/IdentityModal';
-import { PlanSelectorModal } from './components/PlanSelectorModal';
 import { ReflectionModal } from './components/ReflectionModal';
 
 export const App: React.FC = () => {
@@ -20,27 +21,29 @@ export const App: React.FC = () => {
   const [meta, setMeta] = useState<LedgerMeta | null>(null);
   const [progress, setProgress] = useState<ProgressMap>({});
   const [reflections, setReflections] = useState<ReflectionsMap>({});
+  const [prayerRequests, setPrayerRequests] = useState<PrayerRequest[]>([]);
 
   // Modals & UI View State
   const [isIdentityModalOpen, setIsIdentityModalOpen] = useState(false);
-  const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
-  const [selectedReflectionDay, setSelectedReflectionDay] = useState<ScheduleDay | null>(null);
-  const [activeFilter, setActiveFilter] = useState<FilterView>('all');
+  const [selectedReflectionDay, setSelectedReflectionDay] = useState<CustomDayEntry | null>(null);
 
   const loadData = useCallback(async () => {
     try {
       const idRes = await safeGet<{ name: string }>('my-identity', false);
-      setMe(idRes?.name || null);
+      const currentName = idRes?.name || null;
+      setMe(currentName);
 
       const {
         meta: loadedMeta,
         progress: loadedProgress,
         reflections: loadedReflections,
-      } = await ledgerApi.loadLedger();
+        prayerRequests: loadedPrayers,
+      } = await ledgerApi.loadLedger(currentName);
 
       setMeta(loadedMeta);
       setProgress(loadedProgress);
       setReflections(loadedReflections);
+      setPrayerRequests(loadedPrayers);
     } catch (err) {
       console.error('Failed to load ledger data:', err);
     } finally {
@@ -52,33 +55,36 @@ export const App: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  // Realtime subscription for single group
+  // Realtime subscription
   useEffect(() => {
     const unsubscribe = ledgerApi.subscribeToChanges(async () => {
       const {
         meta: refreshedMeta,
         progress: refreshedProgress,
         reflections: refreshedReflections,
-      } = await ledgerApi.loadLedger();
+        prayerRequests: refreshedPrayers,
+      } = await ledgerApi.loadLedger(me);
 
       if (refreshedMeta) setMeta(refreshedMeta);
       setProgress(refreshedProgress);
       setReflections(refreshedReflections);
+      setPrayerRequests(refreshedPrayers);
     });
 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [me]);
 
-  const handleStartSetup = async (name: string, startDate: string, planId: PlanId) => {
+  const handleStartSetup = async (name: string, startDate: string) => {
     setLoading(true);
     try {
-      const createdMeta = await ledgerApi.createLedger(name, startDate, planId);
+      const createdMeta = await ledgerApi.createLedger(name, startDate);
       setMe(name);
       setMeta(createdMeta);
       setProgress({});
       setReflections({});
+      setPrayerRequests([]);
     } catch (err) {
       console.error('Failed to create ledger:', err);
     } finally {
@@ -95,18 +101,13 @@ export const App: React.FC = () => {
         setMeta(result.meta);
         setProgress(result.progress);
         setReflections(result.reflections);
+        setPrayerRequests(result.prayerRequests);
       }
     } catch (err) {
       console.error('Failed to join ledger:', err);
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleSelectPlan = async (planId: PlanId) => {
-    if (!meta) return;
-    const updated = await ledgerApi.updatePlan(planId, meta);
-    setMeta(updated);
   };
 
   const handleSelectIdentity = async (name: string) => {
@@ -129,15 +130,18 @@ export const App: React.FC = () => {
     setProgress(newProgress);
   };
 
-  const handleSaveReflection = async (text: string) => {
-    if (!me || !selectedReflectionDay) return;
-    const updated = await ledgerApi.saveReflection(
-      selectedReflectionDay.day,
-      me,
-      text,
-      reflections
-    );
+  const handleSaveReflection = async (day: number, text: string, isPublic: boolean) => {
+    if (!me) return;
+    const updated = await ledgerApi.saveReflection(day, me, text, isPublic, reflections);
     setReflections(updated);
+  };
+
+  const handleAddPrayerRequest = async (text: string) => {
+    if (!me || !meta) return;
+    const expectedDay = getTodayIndex(meta.startDate, TOTAL_CUSTOM_DAYS);
+    const currentWeek = Math.ceil(expectedDay / 7);
+    const updated = await ledgerApi.addPrayerRequest(me, currentWeek, text, prayerRequests);
+    setPrayerRequests(updated);
   };
 
   if (loading) {
@@ -154,79 +158,66 @@ export const App: React.FC = () => {
     );
   }
 
-  const activePlan = READING_PLANS[meta.planId || DEFAULT_PLAN_ID] || READING_PLANS[DEFAULT_PLAN_ID];
-  const expectedDay = getTodayIndex(meta.startDate, activePlan.totalDays);
-  const todayEntry = activePlan.schedule[expectedDay - 1] || activePlan.schedule[0];
-  const missedDays = getMissedDays(me, progress, expectedDay);
+  const expectedDay = getTodayIndex(meta.startDate, TOTAL_CUSTOM_DAYS);
+  const currentWeek = Math.ceil(expectedDay / 7);
+  const todayEntry = CUSTOM_SCHEDULE[expectedDay - 1] || CUSTOM_SCHEDULE[0];
+  const bufferStatus = calculateGraceBuffer(me, progress, expectedDay);
 
   return (
     <div className="wrap">
+      {/* 1. Hero Header with Carry-Forward Grace Buffer & Progressive Pace */}
       <HeroCard
         me={me}
         meta={meta}
-        plan={activePlan}
-        progress={progress}
         expectedDay={expectedDay}
+        currentWeek={currentWeek}
+        bufferStatus={bufferStatus}
+        memberCount={meta.members.length}
         onSwitchIdentity={() => setIsIdentityModalOpen(true)}
-        onOpenPlanSelector={() => setIsPlanModalOpen(true)}
       />
 
-      <CatchUpBanner
-        missedDays={missedDays}
-        activeFilter={activeFilter}
-        onSelectFilter={(f) => setActiveFilter(f)}
-      />
+      {/* 2. Active Week's Memory Verse */}
+      <WeeklyMemoryVerse currentWeek={currentWeek} />
 
-      <TodayCard
+      {/* 3. Today's Reading Card with 1-Tap Read Link & Prayer Focus */}
+      <DailyCard
         me={me}
         expectedDay={expectedDay}
         todayEntry={todayEntry}
         progress={progress}
         reflections={reflections[expectedDay] || []}
         onToggleDay={handleToggleDay}
-        onOpenReflection={(entry) => setSelectedReflectionDay(entry)}
+        onSaveReflection={(text, isPublic) => handleSaveReflection(expectedDay, text, isPublic)}
       />
 
-      {/* Filter Tabs */}
-      <div className="filter-pill-container">
-        <button
-          className={`filter-pill ${activeFilter === 'all' ? 'active' : ''}`}
-          onClick={() => setActiveFilter('all')}
-        >
-          All Weeks
-        </button>
-        <button
-          className={`filter-pill ${activeFilter === 'catchup' ? 'active' : ''}`}
-          onClick={() => setActiveFilter('catchup')}
-        >
-          Catch Up {missedDays.length > 0 && `(${missedDays.length})`}
-        </button>
-        <button
-          className={`filter-pill ${activeFilter === 'ahead' ? 'active' : ''}`}
-          onClick={() => setActiveFilter('ahead')}
-        >
-          Read Ahead
-        </button>
-      </div>
-
+      {/* 4. Full 27-Week Progressive Schedule */}
       <WeekAccordion
-        schedule={activePlan.schedule}
+        schedule={CUSTOM_SCHEDULE}
         me={me}
         expectedDay={expectedDay}
         progress={progress}
         reflections={reflections}
-        activeFilter={activeFilter}
+        bufferStatus={bufferStatus}
         onToggleDay={handleToggleDay}
         onOpenReflection={(entry) => setSelectedReflectionDay(entry)}
       />
 
+      {/* 5. Fellowship Weekly Prayer Space */}
+      <PrayerRequestsCard
+        currentWeek={currentWeek}
+        currentUser={me}
+        prayerRequests={prayerRequests}
+        onAddPrayerRequest={handleAddPrayerRequest}
+      />
+
+      {/* 6. Fellowship Leaderboard */}
       <LeaderboardCard
         me={me}
         members={meta.members}
         progress={progress}
       />
 
-      {/* Modals */}
+      {/* Identity Switch Modal */}
       <IdentityModal
         currentName={me}
         members={meta.members}
@@ -235,21 +226,22 @@ export const App: React.FC = () => {
         onSelectIdentity={handleSelectIdentity}
       />
 
-      <PlanSelectorModal
-        currentPlanId={activePlan.id}
-        isOpen={isPlanModalOpen}
-        onClose={() => setIsPlanModalOpen(false)}
-        onSelectPlan={handleSelectPlan}
-      />
-
+      {/* Day Reflection Modal */}
       {selectedReflectionDay && (
         <ReflectionModal
-          dayEntry={selectedReflectionDay}
+          dayEntry={{
+            day: selectedReflectionDay.day,
+            reading: selectedReflectionDay.reading,
+            chapters: selectedReflectionDay.chapters,
+            reflectionPrompt: selectedReflectionDay.prayerPoint,
+          }}
           notes={reflections[selectedReflectionDay.day] || []}
           currentUser={me}
           isOpen={true}
           onClose={() => setSelectedReflectionDay(null)}
-          onSaveNote={handleSaveReflection}
+          onSaveNote={(text, isPublic) =>
+            handleSaveReflection(selectedReflectionDay.day, text, isPublic)
+          }
         />
       )}
     </div>
