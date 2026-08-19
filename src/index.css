@@ -80,13 +80,74 @@ button {
   pointer-events: none;
 }
 
+.hero-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.status-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.code-badge {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px dashed var(--gold);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s;
+}
+
+.code-badge:hover {
+  background: var(--gold-soft);
+}
+
+.code-badge b {
+  color: var(--gold);
+  letter-spacing: 0.05em;
+}
+
+.sync-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sync-badge.online {
+  background: rgba(132, 160, 141, 0.2);
+  color: var(--sage);
+  border: 1px solid var(--sage);
+}
+
+.sync-badge.local {
+  background: rgba(147, 165, 153, 0.1);
+  color: var(--muted-2);
+  border: 1px solid var(--line);
+}
+
 .eyebrow {
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: .16em;
   text-transform: uppercase;
   color: var(--sage);
-  margin: 0 0 8px;
+  margin: 0;
 }
 
 h1 {
@@ -506,14 +567,42 @@ h1 {
 
 /* ---- Onboarding ---- */
 .onboard {
-  max-width: 400px;
-  margin: 14vh auto 0;
+  max-width: 420px;
+  margin: 10vh auto 0;
   text-align: center;
   padding: 0 16px;
 }
 
 .onboard h1 {
   font-size: clamp(22px, 6vw, 28px);
+}
+
+.tab-switch {
+  display: flex;
+  gap: 8px;
+  margin: 20px 0 14px;
+  background: var(--surface-2);
+  padding: 4px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+}
+
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab-btn.active {
+  background: var(--surface-3);
+  color: var(--gold);
+  font-weight: 600;
 }
 
 .onboard input {
@@ -525,7 +614,7 @@ h1 {
   color: var(--text);
   font-family: var(--font-body);
   font-size: 15px;
-  margin: 10px 0;
+  margin: 8px 0;
 }
 
 .onboard input:focus {
@@ -535,7 +624,7 @@ h1 {
 
 .onboard .btn {
   width: 100%;
-  margin-top: 8px;
+  margin-top: 10px;
   padding: 13px;
 }
 

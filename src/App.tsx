@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { LedgerMeta, ProgressMap } from './types';
 import { SCHEDULE } from './data/schedule';
 import { safeGet, safeSet } from './services/storage';
+import { ledgerApi } from './services/ledgerApi';
 import { getTodayIndex } from './utils';
 import { HeroCard } from './components/HeroCard';
 import { TodayCard } from './components/TodayCard';
@@ -18,60 +19,68 @@ export const App: React.FC = () => {
   const [isIdentityModalOpen, setIsIdentityModalOpen] = useState(false);
 
   const loadData = useCallback(async () => {
-    setLoading(true);
     try {
       const idRes = await safeGet<{ name: string }>('my-identity', false);
       setMe(idRes?.name || null);
-    } catch {
-      setMe(null);
-    }
 
-    try {
-      const metaRes = await safeGet<LedgerMeta>('meta', true);
-      setMeta(metaRes || null);
-    } catch {
-      setMeta(null);
+      const { meta: loadedMeta, progress: loadedProgress } = await ledgerApi.loadLedger();
+      setMeta(loadedMeta);
+      setProgress(loadedProgress);
+    } catch (err) {
+      console.error('Failed to load ledger data:', err);
+    } finally {
+      setLoading(false);
     }
-
-    try {
-      const progRes = await safeGet<ProgressMap>('progress', true);
-      setProgress(progRes || {});
-    } catch {
-      setProgress({});
-    }
-
-    setLoading(false);
   }, []);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  const handleStartSetup = async (name: string, startDate: string) => {
-    const newMeta: LedgerMeta = {
-      startDate,
-      members: [name],
-    };
-    await safeSet('my-identity', { name }, false);
-    await safeSet('meta', newMeta, true);
-    await safeSet('progress', {}, true);
+  // Realtime subscription
+  useEffect(() => {
+    if (!meta?.code) return;
 
-    setMe(name);
-    setMeta(newMeta);
-    setProgress({});
+    const unsubscribe = ledgerApi.subscribeToChanges(meta.code, async () => {
+      const { meta: refreshedMeta, progress: refreshedProgress } = await ledgerApi.loadLedger(meta.code);
+      if (refreshedMeta) setMeta(refreshedMeta);
+      setProgress(refreshedProgress);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [meta?.code]);
+
+  const handleStartSetup = async (name: string, startDate: string) => {
+    setLoading(true);
+    try {
+      const createdMeta = await ledgerApi.createLedger(name, startDate);
+      setMe(name);
+      setMeta(createdMeta);
+      setProgress({});
+    } catch (err) {
+      console.error('Failed to create ledger:', err);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleJoin = async (name: string) => {
-    await safeSet('my-identity', { name }, false);
-    setMe(name);
-
-    if (meta && !meta.members.includes(name)) {
-      const updatedMeta: LedgerMeta = {
-        ...meta,
-        members: [...meta.members, name],
-      };
-      await safeSet('meta', updatedMeta, true);
-      setMeta(updatedMeta);
+  const handleJoin = async (name: string, code?: string) => {
+    setLoading(true);
+    try {
+      const result = await ledgerApi.joinLedger(name, code);
+      if (result) {
+        setMe(name);
+        setMeta(result.meta);
+        setProgress(result.progress);
+      } else {
+        alert('Group code not found. Please verify the code.');
+      }
+    } catch (err) {
+      console.error('Failed to join ledger:', err);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -92,30 +101,12 @@ export const App: React.FC = () => {
   const handleToggleDay = async (day: number) => {
     if (!me) return;
 
-    const currentDayReaders = progress[day] ? [...progress[day]] : [];
-    const index = currentDayReaders.indexOf(me);
-
-    if (index >= 0) {
-      currentDayReaders.splice(index, 1);
-    } else {
-      currentDayReaders.push(me);
-    }
-
-    const updatedProgress: ProgressMap = {
-      ...progress,
-      [day]: currentDayReaders,
-    };
-
-    setProgress(updatedProgress);
-    await safeSet('progress', updatedProgress, true);
+    const newProgress = await ledgerApi.toggleDay(day, me, progress, meta?.code);
+    setProgress(newProgress);
   };
 
   if (loading) {
-    return (
-      <div className="loading">
-        Opening the ledger…
-      </div>
-    );
+    return <div className="loading">Opening the ledger…</div>;
   }
 
   if (!meta || !me) {

@@ -5,6 +5,8 @@ export interface ScheduleDay {
 }
 
 export interface LedgerMeta {
+  code?: string;
+  title?: string;
   startDate: string;
   members: string[];
 }

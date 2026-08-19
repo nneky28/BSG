@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { LedgerMeta, ProgressMap } from '../types';
 import { formatDate, getCompletedCount, computeStreak } from '../utils';
+import { isSupabaseConfigured } from '../services/supabase';
 
 interface HeroCardProps {
   me: string;
@@ -17,14 +18,41 @@ export const HeroCard: React.FC<HeroCardProps> = ({
   expectedDay,
   onSwitchIdentity,
 }) => {
+  const [copied, setCopied] = useState(false);
   const myDone = getCompletedCount(me, progress);
   const pct = Math.round((myDone / 180) * 100);
   const streak = computeStreak(me, progress);
   const memberCount = meta.members.length;
+  const isCloudSynced = isSupabaseConfigured();
+
+  const handleCopyCode = () => {
+    if (meta.code) {
+      navigator.clipboard.writeText(meta.code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   return (
     <div className="hero-card">
-      <p className="eyebrow">Six-month reading ledger</p>
+      <div className="hero-top">
+        <p className="eyebrow">Six-month reading ledger</p>
+        <div className="status-badges">
+          {meta.code && (
+            <button
+              className="code-badge"
+              onClick={handleCopyCode}
+              title="Click to copy group code"
+            >
+              Group Code: <b>{meta.code}</b> {copied ? '✓ Copied!' : '📋'}
+            </button>
+          )}
+          <span className={`sync-badge ${isCloudSynced ? 'online' : 'local'}`}>
+            {isCloudSynced ? '● Cloud Synced' : '○ Local Mode'}
+          </span>
+        </div>
+      </div>
+
       <h1>Through the Book, Together</h1>
       <p className="sub">
         Started {formatDate(new Date(meta.startDate + 'T00:00:00'))} · 1,189 chapters · 180 days ·{' '}
